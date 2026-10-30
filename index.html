@@ -58,7 +58,7 @@ td,th{border-bottom:1px solid var(--line);padding:5px 4px;text-align:left;vertic
 </head>
 <body>
 <header>
-  <h1>Load Check</h1>
+  <h1>Load Check <span id="ver" style="font-size:12px;font-weight:400;opacity:.7">v4.1</span></h1>
   <div class="mode" role="group" aria-label="Mode">
     <button id="mLoad" class="on">Load</button><button id="mRecv">Receive</button>
   </div>
@@ -323,7 +323,7 @@ $('bNew').onclick=function(){dialog('New manifest','<p>Clear the current manifes
 
 load();render();
 if(S.manifest)show('info','Resumed: '+count()+' of '+(S.total||'?')+' boxes','Tap Start scanning to continue');
-if('serviceWorker' in navigator&&location.protocol==='https:'){navigator.serviceWorker.register('sw.js').catch(function(){})}
+if('serviceWorker' in navigator&&(location.protocol==='https:'||location.hostname==='localhost')){navigator.serviceWorker.register('sw.js',{updateViaCache:'none'}).catch(function(){})}
 })();
 </script>
 </body>

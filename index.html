@@ -26,6 +26,7 @@ header h1{font-size:18px;margin:0;flex:1;letter-spacing:.3px}
 #tally{display:flex;align-items:baseline;gap:10px;margin-top:4px}
 #count{font-size:44px;font-weight:800;line-height:1}
 #of{font-size:20px;color:var(--mute)}
+#gps{margin-left:auto;font-size:13px;font-weight:600;color:var(--mute);border:1px solid var(--line);border-radius:999px;padding:3px 9px}
 #bar{height:8px;background:var(--line);border-radius:4px;margin-top:6px;overflow:hidden}
 #bar i{display:block;height:100%;width:0;background:var(--ok);transition:width .2s}
 #camwrap{position:relative;flex:1;min-height:200px;background:#000;overflow:hidden}
@@ -66,7 +67,7 @@ td,th{border-bottom:1px solid var(--line);padding:5px 4px;text-align:left;vertic
 <section id="manifest">
   <div class="lbl">Manifest</div>
   <div id="mid">— scan the MANIFEST code to start —</div>
-  <div id="tally"><span id="count">0</span><span id="of">/ 0 boxes</span></div>
+  <div id="tally"><span id="count">0</span><span id="of">/ 0 boxes</span><span id="gps">GPS: off</span></div>
   <div id="bar"><i></i></div>
 </section>
 
@@ -103,9 +104,10 @@ td,th{border-bottom:1px solid var(--line);padding:5px 4px;text-align:left;vertic
 'use strict';
 var $=function(id){return document.getElementById(id)};
 var KEY='loadcheck.v1';
-var S={mode:'Load',manifest:'',total:0,scanned:{},order:[],log:[],sound:true};
+var S={mode:'Load',manifest:'',loadid:'',total:0,scanned:{},order:[],log:[],sound:true};
 var video=$('video'),canvas=document.createElement('canvas'),ctx=canvas.getContext('2d',{willReadFrequently:true});
 var stream=null,track=null,detector=null,running=false,last={code:'',t:0},audio=null,wakeLock=null,busy=false;
+var G={lat:null,lon:null,acc:null,t:0,watch:null,state:'off'}; // latest GPS fix (not saved)
 
 // ---------- persistence ----------
 function save(){try{localStorage.setItem(KEY,JSON.stringify(S))}catch(e){}}
@@ -113,15 +115,26 @@ function load(){try{var j=JSON.parse(localStorage.getItem(KEY)||'null');if(j&&ty
 
 // ---------- parsing ----------
 // Codes from the AI Transport Plan workbook:
-//   M0120#<load check code>  = manifest / waybill, 120 boxes expected
+//   L0120#<Load ID>          = manifest / waybill with the full Load ID (v56+), 120 boxes expected;
+//                              the load check code is calculated here from the Load ID (same formula as the workbook)
+//   M0120#<load check code>  = manifest / waybill short form (older workbooks, stickers, Load IDs over 36 chars)
 //   B0007#<load check code>  = box 7 of that load
 // (the 6-character load check code is calculated by the workbook from the Manifest No. / Load ID)
 // Any other QR content is reported as "not a load-check code".
 function norm(s){return String(s||'').replace(/\s+/g,' ').trim().toUpperCase()}
+var ALPHA='0123456789ABCDEFGHJKMNPQRSTVWXYZ';
+function checkCode(lid){ // must match QR Engine!B3 in the workbook
+  var h=0,P=2147483647,n=Math.min(lid.length,120);
+  for(var i=0;i<n;i++)h=(h*131+lid.charCodeAt(i))%P;
+  h=(h*131+lid.length)%P;
+  var out='';for(var k=5;k>=0;k--)out+=ALPHA.charAt(Math.floor(h/Math.pow(32,k))%32);return out;
+}
 function parse(raw){
+  var r=String(raw||'').replace(/[\r\n]+/g,' ').trim(),L=/^[Ll](\d{1,6})#(.+)$/.exec(r);
+  if(L){var lid=L[2].trim();return{type:'M',num:parseInt(L[1],10),id:checkCode(lid),loadid:lid,raw:r}}
   var t=norm(raw),m=/^([MB])(\d{1,6})#(.+)$/.exec(t);
-  if(m)return{type:m[1],num:parseInt(m[2],10),id:m[3],raw:t};
-  return{type:'P',num:0,id:t,raw:t};
+  if(m)return{type:m[1],num:parseInt(m[2],10),id:m[3],loadid:'',raw:t};
+  return{type:'P',num:0,id:t,loadid:'',raw:t};
 }
 
 // ---------- sound / feedback ----------
@@ -150,10 +163,14 @@ function esc(s){return String(s).replace(/[&<>"]/g,function(c){return{'&':'&amp;
 
 // ---------- core logic ----------
 function stamp(){var d=new Date(),p=function(n){return(n<10?'0':'')+n};return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate())+' '+p(d.getHours())+':'+p(d.getMinutes())+':'+p(d.getSeconds())}
-function logIt(code,result,box,note){S.log.push({time:stamp(),mode:S.mode,manifest:S.manifest,code:code,result:result,box:box||'',note:note||''})}
+function fix(){ // latest location for a log row; blank when there is no fix
+  if(G.lat===null)return{lat:'',lon:'',acc:'',age:''};
+  return{lat:G.lat.toFixed(6),lon:G.lon.toFixed(6),acc:Math.round(G.acc),age:Math.max(0,Math.round((Date.now()-G.t)/1000))};
+}
+function logIt(code,result,box,note){var f=fix();S.log.push({time:stamp(),mode:S.mode,manifest:S.manifest,loadid:S.loadid||'',code:code,result:result,box:box||'',note:note||'',lat:f.lat,lon:f.lon,acc:f.acc,age:f.age})}
 function count(){return S.order.length}
 function render(){
-  $('mid').textContent=S.manifest?('Load check code  '+S.manifest):'— scan the MANIFEST code to start —';
+  $('mid').textContent=S.manifest?((S.loadid?S.loadid+'  ·  ':'')+'code '+S.manifest):'— scan the MANIFEST code to start —';
   $('count').textContent=count();
   $('of').textContent='/ '+(S.total||'?')+' boxes';
   $('bar').firstChild.style.width=(S.total?Math.min(100,100*count()/S.total):0)+'%';
@@ -162,10 +179,10 @@ function render(){
   $('bUndo').disabled=!S.order.length;$('bMissing').disabled=!S.total;$('bManual').disabled=!S.manifest;
 }
 function register(p){
-  S.manifest=p.id;S.total=p.num;S.scanned={};S.order=[];
+  S.manifest=p.id;S.loadid=p.loadid||'';S.total=p.num;S.scanned={};S.order=[];
   logIt(p.raw,'MANIFEST REGISTERED','',S.total?S.total+' boxes expected':'box count not in code');
   save();render();SND.reg();
-  show('info','Manifest registered: '+S.manifest,S.total?S.total+' boxes on this load':'Box count not in this code');
+  show('info','Manifest registered: '+(S.loadid||S.manifest),(S.total?S.total+' boxes on this load':'Box count not in this code')+(S.loadid?'':' · Load ID not in this code'));
 }
 function acceptBox(n,code,how){
   if(S.scanned[n]){logIt(code,'DUPLICATE',n,how);save();SND.dup();show('warn','Box '+n+' already scanned','Scanned at '+S.scanned[n].slice(11));return}
@@ -182,6 +199,7 @@ function handle(raw){
     if(!S.manifest){register(p);return}
     if(p.id===S.manifest){
       if(p.type==='M'&&p.num&&p.num!==S.total){S.total=p.num;save();render()}
+      if(p.loadid&&!S.loadid){S.loadid=p.loadid;logIt(p.raw,'LOAD ID ADDED','',p.loadid);save();render();SND.reg();show('info','Load ID added: '+p.loadid,count()+' of '+(S.total||'?')+' boxes scanned');return}
       SND.reg();show('info','This manifest is already registered',count()+' of '+(S.total||'?')+' boxes scanned');return}
     confirmNew(p);return;
   }
@@ -214,11 +232,29 @@ function startCam(){
     stream=s;track=s.getVideoTracks()[0];video.srcObject=s;video.play();$('start').style.display='none';running=true;
     try{var caps=track.getCapabilities?track.getCapabilities():{};$('bTorch').disabled=!caps.torch}catch(e){}
     if('BarcodeDetector' in window){try{BarcodeDetector.getSupportedFormats().then(function(f){if(f.indexOf('qr_code')>=0)detector=new BarcodeDetector({formats:['qr_code']})})}catch(e){}}
-    keepAwake();requestAnimationFrame(onFrame);
+    keepAwake();gpsStart();requestAnimationFrame(onFrame);
   }).catch(function(e){$('camerr').textContent='Camera blocked: '+(e&&e.name||e)+'. Allow camera access for this site in the phone settings, then try again.'});
 }
 function keepAwake(){try{if('wakeLock' in navigator)navigator.wakeLock.request('screen').then(function(w){wakeLock=w}).catch(function(){})}catch(e){}}
-document.addEventListener('visibilitychange',function(){if(document.visibilityState==='visible'&&running)keepAwake()});
+// ---------- location (GPS) ----------
+function gpsShow(){var e=$('gps');
+  if(G.state==='ok'){var age=(Date.now()-G.t)/1000;e.textContent='GPS ±'+Math.round(G.acc)+' m'+(age>120?' (old)':'');e.style.color=G.acc<=30&&age<=120?'#4ade80':'#fbbf24'}
+  else{e.textContent={off:'GPS: off',wait:'GPS: waiting',denied:'GPS: blocked',none:'GPS: n/a'}[G.state]||'GPS';e.style.color=G.state==='denied'?'#fca5a5':''}}
+function gpsStart(){
+  if(!('geolocation' in navigator)){G.state='none';gpsShow();return}
+  if(G.watch!==null)return;
+  if(G.state!=='ok')G.state='wait';gpsShow();
+  try{G.watch=navigator.geolocation.watchPosition(function(p){
+      G.lat=p.coords.latitude;G.lon=p.coords.longitude;G.acc=p.coords.accuracy;G.t=Date.now();G.state='ok';gpsShow()},
+    function(err){if(err&&err.code===1){G.state='denied';gpsStop()}gpsShow()},
+    {enableHighAccuracy:true,maximumAge:10000,timeout:60000})}catch(e){G.state='none';gpsShow()}
+}
+function gpsStop(){if(G.watch!==null){try{navigator.geolocation.clearWatch(G.watch)}catch(e){}G.watch=null}}
+setInterval(gpsShow,5000);
+document.addEventListener('visibilitychange',function(){
+  if(document.visibilityState==='visible'){if(running){keepAwake();if(G.state!=='denied')gpsStart()}}
+  else gpsStop(); // saves battery while the phone is locked or the app is in the background
+});
 
 // ---------- dialogs ----------
 function dialog(title,html,buttons){
@@ -230,20 +266,29 @@ function ranges(a){var r=[],i=0;while(i<a.length){var j=i;while(j+1<a.length&&a[
 function missing(){var m=[];for(var i=1;i<=S.total;i++)if(!S.scanned[i])m.push(i);return m}
 function confirmNew(p){
   SND.warn();show('warn','Different manifest scanned',p.id);
-  dialog('Start a new manifest?','<p>Current: <b>'+esc(S.manifest)+'</b><br>'+count()+' of '+(S.total||'?')+' boxes scanned.</p><p>New: <b>'+esc(p.id)+'</b>'+(p.type==='M'?' ('+p.num+' boxes)':'')+'</p><p>Export the current log first if you need it. The log is kept until you clear it.</p>',
+  dialog('Start a new manifest?','<p>Current: <b>'+esc(S.loadid||S.manifest)+'</b><br>'+count()+' of '+(S.total||'?')+' boxes scanned.</p><p>New: <b>'+esc(p.loadid||p.id)+'</b>'+(p.type==='M'?' ('+p.num+' boxes)':'')+'</p><p>Export the current log first if you need it. The log is kept until you clear it.</p>',
     [['Cancel',null,'sec'],['Export CSV first',function(){exportCSV()},'sec'],['Start new',function(){register(p)},'danger']]);
 }
 
 // ---------- export ----------
 function csv(){
-  var rows=[['Time','Mode','Manifest ID','Code scanned','Result','Box #','Note']];
-  S.log.forEach(function(l){rows.push([l.time,l.mode,l.manifest,l.code,l.result,l.box,l.note])});
-  if(S.manifest){rows.push([]);rows.push(['Summary','',S.manifest,'',count()+' of '+(S.total||'?')+' boxes scanned','','Missing: '+(S.total?ranges(missing())||'none':'n/a')])}
+  var LID={};S.log.forEach(function(l){if(l.loadid)LID[l.manifest]=l.loadid});if(S.manifest&&S.loadid)LID[S.manifest]=S.loadid;
+  var rows=[['Time','Mode','Load ID','Load check code','Code scanned','Result','Box #','Note','Latitude','Longitude','Accuracy (m)','Fix age (s)']];
+  S.log.forEach(function(l){rows.push([l.time,l.mode,l.loadid||LID[l.manifest]||'',l.manifest,l.code,l.result,l.box,l.note,l.lat==null?'':l.lat,l.lon==null?'':l.lon,l.acc==null?'':l.acc,l.age==null?'':l.age])});
+  if(S.manifest){var m=medianLoc(S.manifest);rows.push([]);rows.push(['Summary','',S.loadid||'',S.manifest,'',count()+' of '+(S.total||'?')+' boxes scanned','','Missing: '+(S.total?ranges(missing())||'none':'n/a'),
+    m?m.lat:'',m?m.lon:'',m?'median of '+m.n+' scans'+(m.all?'':' (fixes within 100 m / 2 min)'):'no location fixes','']);}
   return rows.map(function(r){return r.map(function(v){v=String(v==null?'':v);return /[",\n]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v}).join(',')}).join('\r\n');
+}
+function median(a){a=a.slice().sort(function(x,y){return x-y});var n=a.length,h=n>>1;return n%2?a[h]:(a[h-1]+a[h])/2}
+function medianLoc(id){ // median latitude and longitude of this manifest's scans; prefers good fixes
+  var all=S.log.filter(function(l){return l.manifest===id&&l.lat!==''&&l.lat!=null&&l.result!=='MANIFEST CLEARED'});
+  if(!all.length)return null;
+  var good=all.filter(function(l){return +l.acc<=100&&+l.age<=120}),use=good.length?good:all;
+  return{lat:median(use.map(function(l){return +l.lat})).toFixed(6),lon:median(use.map(function(l){return +l.lon})).toFixed(6),n:use.length,all:!good.length};
 }
 function exportCSV(){
   var d=new Date(),p=function(n){return(n<10?'0':'')+n};
-  var name='LoadCheck_'+(S.manifest||'none').replace(/[^A-Z0-9_-]+/gi,'-')+'_'+S.mode+'_'+d.getFullYear()+p(d.getMonth()+1)+p(d.getDate())+'-'+p(d.getHours())+p(d.getMinutes())+'.csv';
+  var name='LoadCheck_'+(S.loadid||S.manifest||'none').replace(/[^A-Za-z0-9_-]+/g,'-')+'_'+S.mode+'_'+d.getFullYear()+p(d.getMonth()+1)+p(d.getDate())+'-'+p(d.getHours())+p(d.getMinutes())+'.csv';
   var blob=new Blob(['﻿'+csv()],{type:'text/csv'});
   try{var file=new File([blob],name,{type:'text/csv'});
     if(navigator.canShare&&navigator.canShare({files:[file]})){navigator.share({files:[file],title:name}).catch(function(){});return}}catch(e){}
@@ -270,7 +315,7 @@ $('bLog').onclick=function(){
   dialog('Scan log ('+S.log.length+')',S.log.length?h:'<p>No scans yet.</p>',[['Clear log',function(){dialog('Clear the log?','<p>This deletes every logged scan on this phone. Export first if you need a record.</p>',[['Cancel',null,'sec'],['Clear',function(){S.log=[];save()},'danger']])},'danger'],['Close']]);
 };
 $('bExport').onclick=exportCSV;
-$('bNew').onclick=function(){dialog('New manifest','<p>Clear the current manifest and box count, then scan the next manifest code. The log is kept.</p>',[['Cancel',null,'sec'],['Clear manifest',function(){if(S.manifest)logIt('','MANIFEST CLEARED','',count()+' of '+(S.total||'?')+' scanned');S.manifest='';S.total=0;S.scanned={};S.order=[];save();render();show('mute','Ready','Scan the manifest code')},'danger']])};
+$('bNew').onclick=function(){dialog('New manifest','<p>Clear the current manifest and box count, then scan the next manifest code. The log is kept.</p>',[['Cancel',null,'sec'],['Clear manifest',function(){if(S.manifest)logIt('','MANIFEST CLEARED','',count()+' of '+(S.total||'?')+' scanned');S.manifest='';S.loadid='';S.total=0;S.scanned={};S.order=[];save();render();show('mute','Ready','Scan the manifest code')},'danger']])};
 
 load();render();
 if(S.manifest)show('info','Resumed: '+count()+' of '+(S.total||'?')+' boxes','Tap Start scanning to continue');

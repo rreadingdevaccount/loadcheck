@@ -273,11 +273,15 @@ function confirmNew(p){
 // ---------- export ----------
 function csv(){
   var LID={};S.log.forEach(function(l){if(l.loadid)LID[l.manifest]=l.loadid});if(S.manifest&&S.loadid)LID[S.manifest]=S.loadid;
-  var rows=[['Time','Mode','Load ID','Load check code','Code scanned','Result','Box #','Note','Latitude','Longitude','Accuracy (m)','Fix age (s)']];
-  S.log.forEach(function(l){rows.push([l.time,l.mode,l.loadid||LID[l.manifest]||'',l.manifest,l.code,l.result,l.box,l.note,l.lat==null?'':l.lat,l.lon==null?'':l.lon,l.acc==null?'':l.acc,l.age==null?'':l.age])});
+  var rows=[['Time','Mode','Load ID','Load check code','Code scanned','Result','Box #','Note','Latitude','Longitude','Accuracy (m)','Fix age (s)','Map link']];
+  S.log.forEach(function(l){rows.push([l.time,l.mode,l.loadid||LID[l.manifest]||'',l.manifest,l.code,l.result,l.box,l.note,l.lat==null?'':l.lat,l.lon==null?'':l.lon,l.acc==null?'':l.acc,l.age==null?'':l.age,mapUrl(l.lat,l.lon)])});
   if(S.manifest){var m=medianLoc(S.manifest);rows.push([]);rows.push(['Summary','',S.loadid||'',S.manifest,'',count()+' of '+(S.total||'?')+' boxes scanned','','Missing: '+(S.total?ranges(missing())||'none':'n/a'),
-    m?m.lat:'',m?m.lon:'',m?'median of '+m.n+' scans'+(m.all?'':' (fixes within 100 m / 2 min)'):'no location fixes','']);}
+    m?m.lat:'',m?m.lon:'',m?'median of '+m.n+' scans'+(m.all?'':' (fixes within 100 m / 2 min)'):'no location fixes','',m?mapUrl(m.lat,m.lon):'']);}
   return rows.map(function(r){return r.map(function(v){v=String(v==null?'':v);return /[",\n]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v}).join(',')}).join('\r\n');
+}
+function mapUrl(lat,lon){ // Google Maps link (documented Maps URL, no key needed); blank without a fix
+  if(lat===''||lat==null||lon===''||lon==null||isNaN(+lat)||isNaN(+lon))return '';
+  return 'https://www.google.com/maps/search/?api=1&query='+(+lat).toFixed(6)+','+(+lon).toFixed(6);
 }
 function median(a){a=a.slice().sort(function(x,y){return x-y});var n=a.length,h=n>>1;return n%2?a[h]:(a[h-1]+a[h])/2}
 function medianLoc(id){ // median latitude and longitude of this manifest's scans; prefers good fixes
